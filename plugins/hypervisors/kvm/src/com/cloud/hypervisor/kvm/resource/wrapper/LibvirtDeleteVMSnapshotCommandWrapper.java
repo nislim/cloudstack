@@ -27,7 +27,10 @@ import com.cloud.resource.CommandWrapper;
 import com.cloud.resource.ResourceWrapper;
 import com.cloud.utils.exception.CloudRuntimeException;
 import org.apache.log4j.Logger;
-import org.libvirt.*;
+import org.libvirt.Connect;
+import org.libvirt.Domain;
+import org.libvirt.DomainSnapshot;
+import org.libvirt.LibvirtException;
 
 @ResourceWrapper(handles = DeleteVMSnapshotCommand.class)
 public class LibvirtDeleteVMSnapshotCommandWrapper  extends CommandWrapper<DeleteVMSnapshotCommand, Answer, LibvirtComputingResource> {
