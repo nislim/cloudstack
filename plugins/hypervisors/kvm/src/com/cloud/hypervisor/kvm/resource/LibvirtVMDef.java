@@ -715,6 +715,8 @@ public class LibvirtVMDef {
             return _diskFmtType;
         }
 
+        public DiskProtocol getDiskProtocol() { return _diskProtocol; }
+
         public int getDiskSeq() {
             char suffix = _diskLabel.charAt(_diskLabel.length() - 1);
             return suffix - 'a';
