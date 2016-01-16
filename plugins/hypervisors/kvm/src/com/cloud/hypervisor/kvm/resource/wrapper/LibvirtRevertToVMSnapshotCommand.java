@@ -23,6 +23,8 @@ import com.cloud.agent.api.Answer;
 import com.cloud.agent.api.RevertToVMSnapshotAnswer;
 import com.cloud.agent.api.RevertToVMSnapshotCommand;
 import com.cloud.hypervisor.kvm.resource.LibvirtComputingResource;
+import com.cloud.hypervisor.kvm.resource.LibvirtVMDef.DiskDef;
+import com.cloud.hypervisor.kvm.resource.LibvirtVMSnapshotDef;
 import com.cloud.resource.CommandWrapper;
 import com.cloud.resource.ResourceWrapper;
 import com.cloud.utils.exception.CloudRuntimeException;
@@ -35,13 +37,16 @@ import org.libvirt.DomainSnapshot;
 import org.libvirt.LibvirtException;
 
 @ResourceWrapper(handles = RevertToVMSnapshotCommand.class)
-public class LibvirtRevertToVMSnapshotCommand extends CommandWrapper<RevertToVMSnapshotCommand, Answer, LibvirtComputingResource> {
+public final class LibvirtRevertToVMSnapshotCommand extends CommandWrapper<RevertToVMSnapshotCommand, Answer, LibvirtComputingResource> {
 
-    private static final Logger s_logger = Logger.getLogger(LibvirtCreateVMSnapshotCommandWrapper.class);
+    private static final Logger s_logger = Logger.getLogger(LibvirtRevertToVMSnapshotCommand.class);
 
     @Override
-    public Answer execute(RevertToVMSnapshotCommand command, LibvirtComputingResource libvirtComputingResource) {
+    public Answer execute(final RevertToVMSnapshotCommand command, final LibvirtComputingResource libvirtComputingResource) {
         final String vmName = command.getVmName();
+        final String snapshotName = command.getTarget().getSnapshotName();
+        final boolean onlineSnapshot = command.getTarget().getType() == VMSnapshot.Type.DiskAndMemory;
+
         PowerState vmState = null;
 
         final StringBuilder xmlSnapshot = new StringBuilder();
@@ -55,11 +60,44 @@ public class LibvirtRevertToVMSnapshotCommand extends CommandWrapper<RevertToVMS
                 try {
                     vm = libvirtComputingResource.getDomain(conn, command.getVmName());
                 } catch (final LibvirtException e) {
-                    s_logger.trace("Ignoring libvirt error.", e);
+                    s_logger.trace("VM not found, cannot revert to snapshot", e);
+                    return new RevertToVMSnapshotAnswer(command, false, "VM not found, cannot revert to snapshot");
                 }
             }
 
-            DomainSnapshot snapshot = vm.snapshotLookupByName(command.getTarget().getSnapshotName());
+            DomainSnapshot snapshot = null;
+
+            try {
+                 snapshot = vm.snapshotLookupByName(snapshotName);
+            } catch (final LibvirtException e) {
+                if(s_logger.isDebugEnabled())
+                    s_logger.debug("VM snapshot not found, trying to restore the snapshot in libvirt");
+            }
+
+            /**
+             * When a VM is destroyed on a host Libvirt loses all info on Snapshots
+             */
+
+            if (snapshot == null){
+                // Snapshot is not found, most likely because this vm has been powered off and/or has been moved to another host.
+
+                try {
+                    LibvirtVMSnapshotDef vmSnapshotDef = new LibvirtVMSnapshotDef(vm, command.getTarget(), command.getTarget().getType(), false);
+
+                    for (DiskDef disk : libvirtComputingResource.getDisks(conn, vm.getName()))
+                        try {
+                            vmSnapshotDef.addDisk(disk);
+                        } catch (LibvirtVMSnapshotDef.UnsupportedDiskException e) {
+                            s_logger.error(e.toString());
+                            return new RevertToVMSnapshotAnswer(command, false, e.toString());
+                        }
+
+                    snapshot = vm.snapshotCreateXML(vmSnapshotDef.toString(), vmSnapshotDef.getFlags());
+                } catch(LibvirtException e){
+                    s_logger.error("Unable to recreate VM snapshot-definition: \n" + e.toString());
+                    return new RevertToVMSnapshotAnswer(command, false, "Unable to recreate VM snapshot-definition");
+                }
+            }
 
             if(snapshot != null)
                 vm.revertToSnapshot(snapshot);

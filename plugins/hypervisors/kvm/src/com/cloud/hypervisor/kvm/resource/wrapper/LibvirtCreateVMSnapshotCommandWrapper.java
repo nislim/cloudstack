@@ -23,26 +23,26 @@ import com.cloud.agent.api.Answer;
 import com.cloud.agent.api.CreateVMSnapshotAnswer;
 import com.cloud.agent.api.CreateVMSnapshotCommand;
 import com.cloud.hypervisor.kvm.resource.LibvirtComputingResource;
+import com.cloud.hypervisor.kvm.resource.LibvirtVMSnapshotDef;
 import com.cloud.resource.CommandWrapper;
 import com.cloud.resource.ResourceWrapper;
 import com.cloud.utils.exception.CloudRuntimeException;
-import com.cloud.vm.snapshot.VMSnapshot;
 import org.apache.log4j.Logger;
 import org.libvirt.Connect;
 import org.libvirt.Domain;
 import org.libvirt.LibvirtException;
 import com.cloud.hypervisor.kvm.resource.LibvirtVMDef.DiskDef;
 
-@ResourceWrapper(handles =  CreateVMSnapshotCommand.class)
+@ResourceWrapper(handles = CreateVMSnapshotCommand.class)
 public final class LibvirtCreateVMSnapshotCommandWrapper extends CommandWrapper<CreateVMSnapshotCommand, Answer, LibvirtComputingResource> {
 
     private static final Logger s_logger = Logger.getLogger(LibvirtCreateVMSnapshotCommandWrapper.class);
 
     @Override
     public Answer execute(final CreateVMSnapshotCommand command, final LibvirtComputingResource libvirtComputingResource) {
-        final String vmName = command.getVmName();
+        s_logger.trace("CreateVMSnapshotCommand.execute()");
 
-        final StringBuilder xmlSnapshot = new StringBuilder();
+        final String vmName = command.getVmName();
 
         try {
             final LibvirtUtilitiesHelper libvirtUtilitiesHelper = libvirtComputingResource.getLibvirtUtilitiesHelper();
@@ -57,31 +57,25 @@ public final class LibvirtCreateVMSnapshotCommandWrapper extends CommandWrapper<
                 }
             }
 
-            xmlSnapshot.append("<domainsnapshot>");
+            try {
+                LibvirtVMSnapshotDef vmSnapshotDef = new LibvirtVMSnapshotDef(vm, command.getTarget(), command.getTarget().getType(), false);
 
-            xmlSnapshot.append("<name>" + command.getTarget().getSnapshotName() + "</name>");
+                for (DiskDef disk : libvirtComputingResource.getDisks(conn, vm.getName()))
+                    try {
+                        vmSnapshotDef.addDisk(disk);
+                    } catch (LibvirtVMSnapshotDef.UnsupportedDiskException e) {
+                        s_logger.error(e.toString());
+                        return new CreateVMSnapshotAnswer(command, false, e.toString());
+                    }
 
-            if(command.getTarget().getType() == VMSnapshot.Type.DiskAndMemory)
-                xmlSnapshot.append("<memory snapshot='internal' />");
-            else
-                xmlSnapshot.append("<memory snapshot='none' />");
-
-            xmlSnapshot.append("<disks>");
-            for(DiskDef disk : libvirtComputingResource.getDisks(conn, vm.getName())){
-                if(disk.getDeviceType() == DiskDef.DeviceType.DISK) {
-                    if(disk.getDiskProtocol() == DiskDef.DiskProtocol.RBD)
-                        return new CreateVMSnapshotAnswer(command, false, "At the moment there is no support for CEPH(RBD) snapshotting");
-                    else
-                        xmlSnapshot.append("<disk snapshot='internal' name='" + disk.getDiskLabel() + "' />");
-                }
+                vm.snapshotCreateXML(vmSnapshotDef.toString(), vmSnapshotDef.getFlags());
+            } catch(LibvirtException e){
+                s_logger.error("Unable to create VM snapshot-definition: \n" + e.toString());
+                return new CreateVMSnapshotAnswer(command, false, "Unable to create VM snapshot-definition");
             }
-            xmlSnapshot.append("</disks>");
-            xmlSnapshot.append("</domainsnapshot>");
-
-            vm.snapshotCreateXML(xmlSnapshot.toString());
 
         } catch (final LibvirtException e) {
-            s_logger.error("Something went wrong while trying to make the snapshot with xml: " + xmlSnapshot.toString());
+            s_logger.error("Something went wrong while trying to make the snapshot");
             return new CreateVMSnapshotAnswer(command, false, e.toString());
         } catch (final CloudRuntimeException e) {
             return new CreateVMSnapshotAnswer(command, false, e.toString());

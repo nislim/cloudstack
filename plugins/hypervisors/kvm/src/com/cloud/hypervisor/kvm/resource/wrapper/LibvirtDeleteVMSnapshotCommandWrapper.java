@@ -23,6 +23,8 @@ import com.cloud.agent.api.Answer;
 import com.cloud.agent.api.DeleteVMSnapshotAnswer;
 import com.cloud.agent.api.DeleteVMSnapshotCommand;
 import com.cloud.hypervisor.kvm.resource.LibvirtComputingResource;
+import com.cloud.hypervisor.kvm.resource.LibvirtVMDef;
+import com.cloud.hypervisor.kvm.resource.LibvirtVMSnapshotDef;
 import com.cloud.resource.CommandWrapper;
 import com.cloud.resource.ResourceWrapper;
 import com.cloud.utils.exception.CloudRuntimeException;
@@ -33,12 +35,12 @@ import org.libvirt.DomainSnapshot;
 import org.libvirt.LibvirtException;
 
 @ResourceWrapper(handles = DeleteVMSnapshotCommand.class)
-public class LibvirtDeleteVMSnapshotCommandWrapper  extends CommandWrapper<DeleteVMSnapshotCommand, Answer, LibvirtComputingResource> {
+public final class LibvirtDeleteVMSnapshotCommandWrapper  extends CommandWrapper<DeleteVMSnapshotCommand, Answer, LibvirtComputingResource> {
 
     private static final Logger s_logger = Logger.getLogger(LibvirtDeleteVMSnapshotCommandWrapper.class);
 
     @Override
-    public Answer execute(DeleteVMSnapshotCommand command, LibvirtComputingResource libvirtComputingResource) {
+    public Answer execute(final DeleteVMSnapshotCommand command, final LibvirtComputingResource libvirtComputingResource) {
         final String vmName = command.getVmName();
 
         final StringBuilder xmlSnapshot = new StringBuilder();
@@ -56,7 +58,31 @@ public class LibvirtDeleteVMSnapshotCommandWrapper  extends CommandWrapper<Delet
                 }
             }
 
-            DomainSnapshot snapshot = vm.snapshotLookupByName(command.getTarget().getSnapshotName());
+            DomainSnapshot snapshot = null;
+
+            try {
+                snapshot = vm.snapshotLookupByName(command.getTarget().getSnapshotName());
+            } catch(LibvirtException e) {
+                if (s_logger.isDebugEnabled())
+                    s_logger.debug("Could not find snapshot-metadata, trying to recreate snapshot-metadata");
+
+                try {
+                    LibvirtVMSnapshotDef vmSnapshotDef = new LibvirtVMSnapshotDef(vm, command.getTarget(), command.getTarget().getType(), false);
+
+                    for (LibvirtVMDef.DiskDef disk : libvirtComputingResource.getDisks(conn, vm.getName()))
+                        try {
+                            vmSnapshotDef.addDisk(disk);
+                        } catch (LibvirtVMSnapshotDef.UnsupportedDiskException e2) {
+                            s_logger.error(e.toString());
+                            return new DeleteVMSnapshotAnswer(command, false, e2.toString());
+                        }
+
+                    vm.snapshotCreateXML(vmSnapshotDef.toString(), vmSnapshotDef.getFlags());
+                } catch(LibvirtException e2){
+                    s_logger.error("Unable to recreate VM snapshot-definition: \n" + e2.toString());
+                    return new DeleteVMSnapshotAnswer(command, false, "Unable to recreate VM snapshot-definition");
+                }
+            }
 
             if(snapshot != null)
                 snapshot.delete(0); // Delete snapshot safely by merging it with its children
